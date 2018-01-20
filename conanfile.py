@@ -16,6 +16,15 @@ class ZMQConan(ConanFile):
     options = {"shared": [True, False]}
     default_options = "shared=False"
 
+    @property
+    def is_mingw(self):
+        return self.settings.compiler == 'gcc' and self.settings.os == 'Windows'
+
+    def build_requirements(self):
+        if self.is_mingw:
+            self.build_requires('mingw_installer/1.0@conan/stable')
+            self.build_requires('msys2_installer/latest@bincrafters/stable')
+
     def system_requirements(self):
         if self.settings.os == "Linux":
             if tools.os_info.linux_distro == "ubuntu" or tools.os_info.linux_distro == "debian":
@@ -36,7 +45,12 @@ class ZMQConan(ConanFile):
         os.rename(extracted_dir, "sources")
 
     def build(self):
-        if self.settings.compiler == 'Visual Studio':
+        if self.is_mingw:
+            msys_bin = self.deps_env_info['msys2_installer'].MSYS_BIN
+            with tools.environment_append({'PATH': [msys_bin],
+                                           'CONAN_BASH_PATH': os.path.join(msys_bin, 'bash.exe')}):
+                self.build_configure()
+        elif self.settings.compiler == 'Visual Studio':
             self.build_vs()
         else:
             self.build_configure()
@@ -82,10 +96,14 @@ class ZMQConan(ConanFile):
             for name in ['autogen.sh', 'configure', 'version.sh', os.path.join('config', 'install-sh')]:
                 os.chmod(name, os.stat(name).st_mode | 0o111)
 
-            self.run('./autogen.sh')
+            self.run('./autogen.sh', win_bash=self.is_mingw)
 
-            env_build = AutoToolsBuildEnvironment(self)
-            args = ['--prefix=%s' % self.package_folder,
+            prefix = os.path.abspath(self.package_folder)
+            if self.is_mingw:
+                prefix = tools.unix_path(prefix, tools.MSYS2)
+
+            env_build = AutoToolsBuildEnvironment(self, win_bash=self.is_mingw)
+            args = ['--prefix=%s' % prefix,
                     '--with-pic',
                     '--without-docs']
             if self.options.shared:
@@ -120,11 +138,13 @@ class ZMQConan(ConanFile):
             self.copy(pattern='*.h', src=os.path.join('sources', 'include'), dst='include', keep_path=True)
 
     def package_info(self):
+        if not self.options.shared:
+            self.cpp_info.defines.append('ZMQ_STATIC')
         if self.settings.compiler == 'Visual Studio':
-            self.cpp_info.libs = ['libzmq', 'ws2_32', 'Iphlpapi']
-            if not self.options.shared:
-                self.cpp_info.defines.append('ZMQ_STATIC')
+            self.cpp_info.libs = ['libzmq']
         else:
             self.cpp_info.libs = ['zmq']
+        if self.settings.os == 'Windows':
+            self.cpp_info.libs.extend(['ws2_32', 'Iphlpapi'])
         if self.settings.os == "Linux":
             self.cpp_info.libs.append('pthread')
